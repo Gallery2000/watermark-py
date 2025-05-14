@@ -6,8 +6,13 @@ from PIL import Image, ImageDraw, ImageFont, ImageStat
 INPUT_DIR = 'attach'
 OUTPUT_DIR = 'watermarked_output'
 # WATERMARK_TEXT = "Your Watermark"  # Change this to your desired watermark text
-WHITE_WATERMARK_IMAGE_PATH = 'white-watermark.png'
-BLACK_WATERMARK_IMAGE_PATH = 'black-watermark.png'
+
+# Get the directory of the current script to make resource paths robust
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Update paths to be relative to the script directory
+WHITE_WATERMARK_IMAGE_PATH = os.path.join(_SCRIPT_DIR, 'white-watermark.png')
+BLACK_WATERMARK_IMAGE_PATH = os.path.join(_SCRIPT_DIR, 'black-watermark.png')
 
 # IMPORTANT: Specify the path to a .ttf font file.
 # Examples: "arial.ttf", "C:/Windows/Fonts/verdana.ttf"
@@ -137,6 +142,74 @@ def add_watermark_to_image(image_path, output_path):
         print(f"Error processing image '{image_path}': {e}. Is it a valid image file?")
     except Exception as e:
         print(f"An unexpected error occurred with '{image_path}': {e}")
+
+def apply_watermark_to_image_object(pil_image_input: Image.Image) -> Image.Image:
+    """
+    Applies a watermark to a PIL Image object and returns a new watermarked PIL Image object.
+    Uses global configurations from this module for watermark images, opacity, etc.
+    """
+    img_rgba = pil_image_input.convert("RGBA") # Ensure RGBA for compositing
+    img_width, img_height = img_rgba.size
+
+    # For brightness analysis, use an RGB version
+    img_for_brightness_analysis = pil_image_input.convert("RGB")
+    brightness = analyze_image_brightness(img_for_brightness_analysis)
+
+    selected_watermark_path = ""
+    current_opacity_percent = 0
+
+    if brightness > BRIGHTNESS_THRESHOLD:
+        selected_watermark_path = BLACK_WATERMARK_IMAGE_PATH
+        current_opacity_percent = OPACITY_FOR_DARK_WM_PERCENT
+        watermark_choice_info = "black"
+    else:
+        selected_watermark_path = WHITE_WATERMARK_IMAGE_PATH
+        current_opacity_percent = OPACITY_FOR_LIGHT_WM_PERCENT
+        watermark_choice_info = "white"
+
+    print(f"Processing image object: Target size {img_width}x{img_height}, Brightness {brightness:.0f}, using {watermark_choice_info} watermark ('{os.path.basename(selected_watermark_path)}').")
+
+    try:
+        watermark_img_original = Image.open(selected_watermark_path)
+    except FileNotFoundError:
+        print(f"Error: Watermark image file not found at '{selected_watermark_path}'. Returning original image.")
+        return pil_image_input # Return original if watermark image missing
+
+    watermark_img_rgba = watermark_img_original.convert("RGBA")
+
+    # --- Optional: Diagnostics for API context ---
+    # print(f"DIAGNOSTIC (API): Watermark '{selected_watermark_path}' loaded. Mode: {watermark_img_rgba.mode}")
+    # if watermark_img_rgba.mode == 'RGBA':
+    #     _, _, _, a_original_diag = watermark_img_rgba.split()
+    #     min_alpha_orig, max_alpha_orig = a_original_diag.getextrema()
+    #     print(f"DIAGNOSTIC (API): Original watermark alpha range (0-255): Min={min_alpha_orig}, Max={max_alpha_orig}")
+
+    new_watermark_side = min(img_width, img_height)
+    
+    try:
+        resized_watermark = watermark_img_rgba.resize((new_watermark_side, new_watermark_side), Image.Resampling.LANCZOS)
+    except AttributeError: # Older Pillow versions
+        resized_watermark = watermark_img_rgba.resize((new_watermark_side, new_watermark_side), Image.LANCZOS)
+
+    r_wm, g_wm, b_wm, a_original_wm = resized_watermark.split()
+    opacity_multiplier = current_opacity_percent / 100.0
+    final_alpha_band_wm = a_original_wm.point(lambda p: int(round(p * opacity_multiplier)))
+    
+    # --- Optional: Diagnostics for API context ---
+    # min_alpha_final, max_alpha_final = final_alpha_band_wm.getextrema()
+    # print(f"DIAGNOSTIC (API): Watermark alpha range AFTER applying {current_opacity_percent}% opacity (0-255): Min={min_alpha_final}, Max={max_alpha_final}")
+
+    watermark_with_opacity = Image.merge("RGBA", (r_wm, g_wm, b_wm, final_alpha_band_wm))
+    
+    watermark_layer = Image.new('RGBA', (img_width, img_height), (0, 0, 0, 0))
+    paste_x = (img_width - new_watermark_side) // 2
+    paste_y = (img_height - new_watermark_side) // 2
+    watermark_layer.paste(watermark_with_opacity, (paste_x, paste_y), watermark_with_opacity)
+
+    watermarked_image = Image.alpha_composite(img_rgba, watermark_layer)
+    
+    # Return as RGB, similar to how file-based version saves as JPG
+    return watermarked_image.convert("RGB")
 
 # --- Main Script ---
 def main():
